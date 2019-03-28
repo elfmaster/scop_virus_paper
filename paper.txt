@@ -33,9 +33,8 @@ with the section_header->sh_flags value being set to SHF_ALLOC|SHF_EXECINSTR,
 whereas the sections that are read-only are marked as SHF_ALLOC, meaning they
 are allocated into memory, and that's it.
 
-Here is the output of 'readelf -S' on a 32bit executable, we examine
-only the sections that are in the text segment, I have truncated the
-rest of the output.
+Here is the output of 'readelf -S' on a 32bit executable, we examine only the
+sections that are in the text segment, I have truncated the rest of the output.
 
   [ 0]			 NULL		 00000000 000000 000000 00	0   0  0
   [ 1] .interp		 PROGBITS	 08048154 000154 000013 00   A	0   0  1
@@ -128,9 +127,9 @@ infection sizes on 64bit.
   LOAD		 0x0000000000400000 0x0000000000800000 0x0000000000800000
 		 0x0000000000000148 0x0000000000000148	R      0x200000
 
-00400000-00401000 r--p 00000000 fd:01 3540930	/home/elfmaster/git/libelfmaster/examples/test_scop_binary
-00600000-00601000 r-xp 00200000 fd:01 3540930   /home/elfmaster/git/libelfmaster/examples/test_scop_binary
-00800000-00801000 r--p 00400000 fd:01 3540930	/home/elfmaster/git/libelfmaster/examples/test_scop_binary
+00400000-00401000 r--p 00000000 fd:01 3540930	test_scop_binary
+00600000-00601000 r-xp 00200000 fd:01 3540930   test_scop_binary
+00800000-00801000 r--p 00400000 fd:01 3540930	test_scop_binary
 
 The text segment is broken up into 3 diferent memory mappings. The end of the
 executable mapping (Which is PT_LOAD[1]) is at 0x601000. This virtual address
@@ -199,7 +198,7 @@ while (elf_segment_iterator_next(&p_iter, &segment) != NULL) {
 	} else { /* If this is not a SCOP binary then we just look for the
 		  * text segment by finding the first PT_LOAD at a minimum
 		  */
-		if (segment.offset == 0 && segment.type == PT_LOAD)
+		if (segment.offset == 0 && segment.type == PT_LOAD) {
 			struct elf_segment new_text;				 
 			uint64_t parasite_vaddr, old_e_entry, end_of_text;	 
 
@@ -212,7 +211,8 @@ while (elf_segment_iterator_next(&p_iter, &segment) != NULL) {
 			new_text.memsz += parasite_size;			 
 			elf_segment_modify(&obj, p_iter.index - 1, &new_text,	 
 			    &error);						 
-			found_text = true;			   
+			found_text = true;
+		}
 	}
 	if (found_text == true && segment.vaddr > text_vaddr) {
 		/*
@@ -225,6 +225,7 @@ while (elf_segment_iterator_next(&p_iter, &segment) != NULL) {
 		elf_segment_modify(&obj, p_iter.index - 1, &new_segment,
 		    &error);
 	}
+	ehdr->e_entry = parasite_vaddr;
 	/*
 	 * Then of course you must adjust ehdr->e_shoff accordingly
 	 * and ehdr->e_entry can point to your parasite code.
@@ -234,8 +235,8 @@ while (elf_segment_iterator_next(&p_iter, &segment) != NULL) {
 
 -= Traditional reverse text padding infections
 
-A reverse text padding infection, which a good example can be demonstrated in the Skeksi Virus [6]
-is the concept of:
+A reverse text padding infection, which a good example can be demonstrated in
+the Skeksi Virus [6] is the concept of:
 
 1. subtracting the text segment's p_vaddr by PAGE_ALIGN(parasite_len) 
 
@@ -249,6 +250,22 @@ PAGE_ALIGN(parasite_len) bytes by adjusting p_offset's accordingly
 
 5. Update the .text section's offset and address to match where the parasite
 begins, i.e. shdr->sh_offset = old_text_base + sizeof(ElfN_Ehdr) 
+
+-= Qualities of a reverse text padding infection
+
+The primary benefits of this infection are that it allows a significantly large
+amount of space to inject code in ET_EXEC files. On a 64bit Linux system with
+the standard linker script used, an executable has a text base address of
+0x400000, thus the maximum parasite length would be 0x400000 -
+PAGE_ALIGN_UP(sizeof(ElfN_Ehdr)) = 4.1MB of space. It is also a favorable infection
+because it allows the modification of e_entry (Entry point) to point in
+the .text section which could potentially circumvent weak Virus heuristics.
+
+The primary disadvantage of this technique is that it will not work with PIE
+executables. In theory it could work with SCOP binaries [1] by extending the
+2nd PT_LOAD segment in reverse, but as we will see shortly there is a much
+better infection technique for regular and PIE executables when SCOP [1] is
+being used.
 
 Illustration 1.1
 
@@ -275,39 +292,63 @@ Illustration 1.3
 
 -= SCOP Reverse text infections
 
-With SCOP linked binaries we may have two approaches available to us.
+With SCOP linked binaries we have a theoretical approach. SCOP binaries are by
+convention compiled and linked as PIE executable's which pretty much exclude
+them from this infection type. There is one theoretical idea if which applied you
+should be able to perform the algorithm as it is already laid out, but instead
+of reversing PT_LOAD[0] which hase a base address of 0x0, you can reverse the
+PT_LOAD[1] segment which is the text segment's R+X code separated segment in
+SCOP binaries. With that said, there is a much better infection method for SCOP
+binaries that lends itself very nicely to those who want to easily insert large
+amounts of code into the target binary without having to make any adjustments
+to the ELF file headers.
 
--= SCOP Reverse text infection method 1.
+-= SCOP Ultimate text padding infection
 
-1. The first text segment PT_LOAD is read-only. Simply mark it as R+X, and and
-follow the existing algorithm used with traditional ELF executables.
+$ gcc -fPIC -pie test.c -o test
+$ gcc -fPIC -pie -Wl,-z,separate-code test.c -o test_scop
 
--= SCOP Reverse text infection method 2.
+$ ls -lh test
+-rwxrwxr-x 1 elfmaster elfmaster 8.1K Mar 28 13:44 test
+$ ls -lh test_scop
+-rwxrwxr-x 1 elfmaster elfmaster 4.1M Mar 28 13:44 test_scop
+$
 
-2. This second approach has not yet been tested, but in theory it should be
-possible on 64bit systems due to the huge pages of 0x200000 in between the
-p_vaddr of each segment. The first text PT_LOAD segment is generally going to
-hold relocation records, note data, and symbol data, which will typically not
-require too much space. If this first segment is at p_vaddr 0x200000 and the
-next PT_LOAD segment is at 0x400000 (Which is where the executable code lives)
-then in theory there should be a reasonable amount of unused space between the
-first and second PT_LOAD segment. Infact, if we 
+Notice that there is an enormous difference in file size for these two
+executable's which contain approximately the same amount of code and data. In
+the original writeup for SCOP [1] we hadn't yet paid note to this, but it is an
+important detail that lends itself very nicely to Virus authors or to those who
+want to instrument an executable. Whether or not this was an oversight on the
+developers part, I am not entirely sure but no good reason for it has come to
+mind. The exact details on why the test_scop is so much larger than test is
+because SCOP binaries have p_offset's that are identical to their p_vaddr's for
+the first 3 load segments. This is not necessary, because the only requirement
+for an executable segment to load is that its p_vaddr and p_offset must be
+congruent modulo a PAGE_SIZE. Looking at the first 3 PT_LOAD segments 
+we can see that there is a fast amount of space on-disk in between the 1st and 2nd
+segment, and in between the 2nd and 3rd segment. The 2nd segment is R+X so this
+is ideally the one we want to use. In the test_scop binary the 2nd PT_LOAD segment
+has a p_filesz of 0x24d (589 decimal) bytes. The offset of the 3rd segment is at
+0x400000. This means that we have an injection space available to us that can be
+calculated by PT_LOAD[2].p_offset - PT_LOAD[1].p_offset + PT_LOAD[1].p_filesz.
+For the test_scop binary this results in 2096563 bytes of padding length. This
+is an unusually large code cave for ELF binary types.
+
+As it turns out the SCOP [1] binary mitigation not only helps tighten down the ROP
+gadget regions, but it eases the process of inserting code into the executable.
+
+Illustration 1.4
+		PT_LOAD[0]   PT_LOAD[1]			 PT_LOAD[2]    PT_LOAD[3]
+[elf_hdr][phdrs][text rdonly][text rd+exec][text-padding][text rdonly][data]
+
+SCOP Ultimate padding Algorithm
+
+1. Insert code into file at PT_LOAD[1].p_offset + PT_LOAD[1].p_filesz
+2. Backup original PT_LOAD[1].p_filesz: size_t o_filesz = PT_LOAD[1].p_filesz;
+2. Adjust PT_LOAD[1].p_filesz += code_length
+3. Modify ehdr->e_entry to point at PT_LOAD[1].p_offset + o_filesz
 
 
-- Update p_align for each PT_LOAD segment from 0x200000 to 0x1000; this will allow us to subtract PT_LOAD[1].p_vaddr
-by (parasite_len + 4095 & ~4095) bytes.
-
-- Subtract PT_LOAD[1].p_vaddr by PAGE_ALIGN(parasite_len) bytes.
-
-- Increate PT_LOAD[1].p_filesz and PT_LOAD[1].p_memsz by PAGE_ALIGN(parasite_len) bytes.
-
-- Update the p_offset of all segments that follow PT_LOAD[1] by PAGE_ALIGN(parasite_len) bytes.
-
-- 
-
-[elf_hdr][phdrs][
-
-the first PT_LOAD segment, which is marked 
 [1] https://www.bitlackeys.org/secure_code_partitioning_2018.txt
 [2] Book: Learning Linux binary analysis, chapter 4 'ELF Virus technology'	 
 [3] UNIX ELF parasites and viruses http://83.133.184.251/virensimulation.org/lib/vsc01.html
