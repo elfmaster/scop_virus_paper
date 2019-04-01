@@ -346,7 +346,7 @@ SCOP Ultimate padding Algorithm
 1. Insert code into file at PT_LOAD[1].p_offset + PT_LOAD[1].p_filesz
 2. Backup original PT_LOAD[1].p_filesz: size_t o_filesz = PT_LOAD[1].p_filesz;
 2. Adjust PT_LOAD[1].p_filesz += code_length
-3. Modify ehdr->e_entry to point at PT_LOAD[1].p_offset + o_filesz
+3. Modify ehdr->e_entry to point at PT_LOAD[1].p_vaddr + o_filesz
 
 
 [1] https://www.bitlackeys.org/secure_code_partitioning_2018.txt
