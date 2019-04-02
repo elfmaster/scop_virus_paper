@@ -341,13 +341,20 @@ Illustration 1.4
 		PT_LOAD[0]   PT_LOAD[1]			 PT_LOAD[2]    PT_LOAD[3]
 [elf_hdr][phdrs][text rdonly][text rd+exec][text-padding][text rdonly][data]
 
-SCOP Ultimate padding Algorithm
+-= SCOP Ultimate padding Algorithm
 
 1. Insert code into file at PT_LOAD[1].p_offset + PT_LOAD[1].p_filesz
 2. Backup original PT_LOAD[1].p_filesz: size_t o_filesz = PT_LOAD[1].p_filesz;
 2. Adjust PT_LOAD[1].p_filesz += code_length
-3. Modify ehdr->e_entry to point at PT_LOAD[1].p_vaddr + o_filesz
+3. Adjust PT_LOAD[1].p_memsz += code_length
+4. Modify ehdr->e_entry to point at PT_LOAD[1].p_vaddr + o_filesz
+5. In our case egg.c contains PIC code for jumping back to the original
+entry point which changes at runtime due to ASLR.
 
+In the case of our PoC we inject a parasite called egg, from egg.c This code is
+nothing more than a jump back to the original entry point. Due to the fact that
+most SCOP binaries are also PIE (position independent executable) we must use a
+few tricks to locate the original entry point and jump back to it.
 
 [1] https://www.bitlackeys.org/secure_code_partitioning_2018.txt
 [2] Book: Learning Linux binary analysis, chapter 4 'ELF Virus technology'	 
