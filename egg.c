@@ -28,6 +28,13 @@ int volatile _start() {
 		);
 }
 
+/*
+ * All of your parasite code would typically go between
+ * _start() and get_rip(). Currently the parasite simply
+ * calculates the address of the original entry point
+ * (Since we are being injected into a PIE executable)
+ * and jumps there.
+ */
 unsigned long get_rip(void)
 {
 	long ret;

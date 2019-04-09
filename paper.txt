@@ -1,6 +1,20 @@
-The future of ELF parasite infection techniques with SCOP binaries
+Modern day Linux malware infection techniques with ELF
+Author: ElfMaster - ryan@bitlackeys.org
 
--= Introduction
+Introduction
+Code injection techniques
+Traditional text segment padding infection
+Text segment padding infection in SCOP binaries
+Psuedo-Code of SCOP Text segment padding infection
+Traditional reverse text padding infections
+Qualities of a reverse text padding infection
+SCOP Reverse text infections
+UTI (Ultimate text infection) for SCOP binaries only
+SCOP UTI (Ultimate text infection) algorithm
+Note on resolving the address of Elf_hdr->e_entry in PIE executable's
+Resurrecting the past with DT_NEEDED .so injection techniques
+
+-= 1.0 Introduction
 
 With the recent introduction of SCOP (Secure code partitioning) security
 mitigation, or otherwise known as the 'ld -separate-code' feature there are
@@ -12,6 +26,12 @@ will assume the reader has a complete understanding of the SCOP binary
 mitigation before jumping right into 'infection techniques for parisitic code',
 which could also be termed 'injection techniques' for innovative
 instrumentation depending on the motives.
+
+In this paper we will cover alot of ground; in addition to a discussion
+on ELF infection with SCOP binaries, and traditional binaries, we will also
+explore a method of DT_NEEDED infection that is very difficult to detect
+without ambiguity, and also creates a permanent LD_PRELOAD effect by hijacking
+functions within shared objects loaded with less precedence.
 
 -= A quick primer on the text segment layout
 
@@ -66,9 +86,9 @@ demonstrated in the parsing support for SCOP binaries recently merged into
 https://github.com/elfmaster/libelfmaster we see that when the section headers
 are very useful when heuristically analyzing SCOP binaries with LOAD segments
 that have had their p_flags (Memory permissions) modified which is extremely
-rare but nonetheless having reliable heuristics is important. Had their
-segment permissions tampered with we can rely on the sh_flags of the section
-headers to determine whether a binary is a tampered SCOP binary.
+rare but nonetheless having reliable heuristics is important. Had their segment
+permissions tampered with we can rely on the sh_flags of the section headers to
+determine whether a binary is a tampered SCOP binary.
 
 NOTE: The astute reader may realize that its possible for an attacker to modify
 the section header sh_flags to reflect the segment p_flags.
@@ -82,14 +102,14 @@ binary looks like from the perspective of the program headers.
    PT_LOAD 0	    PT_LOAD 1		PT_LOAD 2	  PT_LOAD 3
 [text_segment(R)][text_segment(R+X)][text_segment(R)][data segment(R+W)]
 
--= Code injection techniques
+-= 1.1 Code injection techniques
 
 I see several ways to instrument the binary with a chunk of additional
 executable code, while still keeping the ELF headers in-tact. First though
 let us discuss very briefly some of the existing infection techniques that
 we used, and are discussed in great depth in [2] and [3]
 
--= Traditional Text segment padding infection
+-= 2.0 Traditional Text segment padding infection
 
 This infection relies on the fact that the text and data segment are flush
 against eachother on disk, but since the p_vaddr must be congruent with the
@@ -115,7 +135,7 @@ on disk.
 
 [ehdr][phdr][text:parasite_size_extension(R+X)][PAGE_SIZE][data(R+W)]
 
-This hardly poses a challenge to the adept binary hacker after a brief glance
+This hardly poses a challenge to the adept binary hacker. After a brief glance
 at the program header table on a SCOP binary we see that the same specification
 rules exist, and that there is HUGE_PAGE's being used allowing for much larger
 infection sizes on 64bit.
@@ -134,12 +154,11 @@ infection sizes on 64bit.
 The text segment is broken up into 3 diferent memory mappings. The end of the
 executable mapping (Which is PT_LOAD[1]) is at 0x601000. This virtual address
 that begins the 3rd text segment (PT_LOAD[2]) is at 0x8000000, which leaves
-quite a bit of space for infection in general.	For injections that require
-arbitrary length infections, there are alternative solutions that don't apply
-to this paper, see [4], and [5] which both use PT_NOTE to PT_LOAD conversions,
-thus allowing them variable length injection size.
+quite a bit of space for infection in general. For injections that require
+arbitrary length infections, there are alternative solutions, see [4] and [5]
+which use PT_NOTE to PT_LOAD conversions.
 
--= Text segment padding infection in SCOP binaries
+-= 2.1 Text segment padding infection in SCOP binaries
 
 The algorithm used for the existing technique is similar to the original
 text segment padding infection except that all phdr->p_offset's after the
@@ -162,7 +181,11 @@ elf_text_offset.
 Since this type of infection is well explored, and the difference in approach
 is so subtle I have given an example of some un-tested code shown below that
 demonstrates how a text segment padding infection [3] would look. Do not fret
-though, in the 
+though, in section 3.4 we give the source code for a totally new type of
+ELF infection that is specific to SCOP binaries.
+
+-= 2.2 Psuedo Example of SCOP Text segment pdading infection
+
 ... main function, etc. ...
 
 struct elf_segment segment;
@@ -237,7 +260,7 @@ while (elf_segment_iterator_next(&p_iter, &segment) != NULL) {
 }
 ... 
 
--= Traditional reverse text padding infections
+-= 3.0 Traditional reverse text padding infections
 
 A reverse text padding infection, which a good example can be demonstrated in
 the Skeksi Virus [6] is the concept of:
@@ -255,7 +278,7 @@ PAGE_ALIGN(parasite_len) bytes by adjusting p_offset's accordingly
 5. Update the .text section's offset and address to match where the parasite
 begins, i.e. shdr->sh_offset = old_text_base + sizeof(ElfN_Ehdr) 
 
--= Qualities of a reverse text padding infection
+-= 3.1 Qualities of a reverse text padding infection
 
 The primary benefits of this infection are that it allows a significantly large
 amount of space to inject code in ET_EXEC files. On a 64bit Linux system with
@@ -294,7 +317,7 @@ Illustration 1.3
 0x3ff000					0x600e10
 [reverse text extension <-> original text(R+X)][data segment(R+W)]
 
--= SCOP Reverse text infections
+-= 3.2 SCOP Reverse text infections
 
 With SCOP linked binaries we have a theoretical approach. SCOP binaries are by
 convention compiled and linked as PIE executable's which pretty much exclude
@@ -307,7 +330,9 @@ binaries that lends itself very nicely to those who want to easily insert large
 amounts of code into the target binary without having to make any adjustments
 to the ELF file headers.
 
--= SCOP Ultimate text padding infection
+-= 3.3 UTI (Ultimate text infection) for SCOP ELF binaries
+
+This is where we get into some more fresh material...
 
 $ gcc -fPIC -pie test.c -o test
 $ gcc -fPIC -pie -Wl,-z,separate-code test.c -o test_scop
@@ -345,7 +370,7 @@ Illustration 1.4
 		PT_LOAD[0]   PT_LOAD[1]			 PT_LOAD[2]    PT_LOAD[3]
 [elf_hdr][phdrs][text rdonly][text rd+exec][text-parasite][text rdonly][data]
 
--= SCOP Ultimate padding Algorithm
+-= 3.4 SCOP UTI Algorithm
 
 1. Insert code into file at PT_LOAD[1].p_offset + PT_LOAD[1].p_filesz
 2. Backup original PT_LOAD[1].p_filesz: size_t o_filesz = PT_LOAD[1].p_filesz;
@@ -355,12 +380,41 @@ Illustration 1.4
 5. In our case egg.c contains PIC code for jumping back to the original
 entry point which changes at runtime due to ASLR.
 
-In the case of our PoC we inject a parasite called egg, from egg.c This code is
-nothing more than a jump back to the original entry point. Due to the fact that
-most SCOP binaries are also PIE (position independent executable) we must use a
-few tricks to locate the original entry point and jump back to it.
+-= 3.5 Note on resolving Elf_Hdr->e_entry in PIE executable's
 
--- parasite code (egg.c) --
+If the target executable is PIE, then the parasite must be able to calculate
+the original entry point address in certain circumstances; primarily when the
+branch instruction used requires an absolute address. The Elf_hdr->e_entry will
+change at runtime once the kernel has randomly relocated the executable to an
+arbitrary address space. Our parasite code egg.c has a text and data segment
+merged into one PT_LOAD segment, this allows for easy access to the data
+segment with position independent code. The egg has two variables that are
+initialized and therefore stored in the .data section (And explicitly not the
+.bss). We have the following two unsigned global integers:
+
+static unsigned long o_entry __attribute__((section(".data"))) = {0x00}; static
+unsigned long vaddr_of_get_rip __attribute__((section(".data"))) = {0x00};
+
+During the injection of egg into the target binary we load o_entry with the
+value of Elf_hdr->e_entry which is an address into the PIE executable and will
+be changed at runtime. We load vaddr_of_get_rip with the address of where we
+injected the get_rip() function from ./egg into target. Even though the
+addresses of get_rip() and Elf_hdr->e_entry are going to change at runtime,
+they are still at a fixed distance from eachother, so we can use the delta
+between them and subtract it from the return value of the get_rip() function
+which returns the address of the current instruction pointer. We are therefore
+using IP relative addressing tricks that are not at all new to virus writers to
+jump back to the original entry point. Using IP relative addressing tricks to
+calculate the new e_entry address is only necessary when using branch
+instructions that require an absolute address such as indirect jmp, call, ljmp,
+lcall, or a push/ret combo. Otherwise you can simply use an immediate jmp or
+call on the original e_entry value.
+
+The get_rip() technique is old-school and primarily useful for finding the
+address of objects within its own body of code (The parasite).
+
+
+-- egg.c (The parasite) --
 
 /*
  * infect.c will patch these values
@@ -382,6 +436,11 @@ extern long real_start;
  * Code to jump back to entry point
  */
 int volatile _start() {
+	/*
+	 * What we are doing essentially:
+	 * size_t delta = &get_rip_injected_code - original_entry_point;
+	 * relocated_entry_point = %rip - delta;
+	 */
 	unsigned long n_entry = get_rip() - (vaddr_of_get_rip - o_entry);
 
 	__asm__ volatile (
@@ -582,9 +641,12 @@ done:
 	elf_close_object(&elfobj);
 }
 
+-= 4.0 Resurrecting the past with DT_NEEDED .so injection techniques
+
+
+
 [1] https://www.bitlackeys.org/secure_code_partitioning_2018.txt
 [2] Book: Learning Linux binary analysis, chapter 4 'ELF Virus technology'
 [3] UNIX ELF parasites and viruses http://83.133.184.251/virensimulation.org/lib/vsc01.html
 [4] https://github.com/elfmaster/dsym_obfuscate
 [5] http://83.133.184.251/virensimulation.org/lib/vrn01.html (Retaliation Virus)
-
