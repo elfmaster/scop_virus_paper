@@ -2,11 +2,13 @@ Modern day Linux malware infection techniques with ELF
 Author: ElfMaster - ryan@bitlackeys.org
 
 - Introduction
+- SCOP Primer
 - Code injection techniques
 - Traditional text segment padding infection
 - Text segment padding infection in SCOP binaries
 - Psuedo-Code of SCOP Text segment padding infection
 - Traditional reverse text padding infections
+- Layout of SCOP program segments
 - Qualities of a reverse text padding infection
 - SCOP Reverse text infections
 - UTI (Ultimate text infection) for SCOP binaries only
@@ -20,44 +22,60 @@ Author: ElfMaster - ryan@bitlackeys.org
 
 With the recent introduction of SCOP (Secure code partitioning) security
 mitigation, or otherwise known as the 'ld -separate-code' feature there are
-naturally going to be some changes in the way ELF segments are parsed, and more
-thought provoking is how malware authors will infect them. I intend to
-extrapolate on all of the methods that come to mind when I look at the way
-these ELF binaries are linked.	Pre-requisite reading [1] will be useful and I
-will assume the reader has a complete understanding of the SCOP binary
-mitigation before jumping right into 'infection techniques for parisitic code',
-which could also be termed 'injection techniques' for innovative
-instrumentation depending on the motives. All of the code in this paper uses
-libelfmaster [9] for portable design and convenience.
+naturally going to be some changes in the way ELF segments are parsed, and even
+more thought provoking is how malware authors will infect them. In addition to
+SCOP infections we will be exploring philosophies around traditional infection
+techniques and even discuss a lost technique for shared library injection via
+DT_NEEDED. All of the code in this paper uses libelfmaster [9] for portable
+design, convenience and portability. Lets explore a quick primer to SCOP
+executables before jumping right into the Malware techniques.
 
-In this paper we will cover alot of ground; in addition to a discussion
-on ELF infection with SCOP binaries, and traditional binaries, we will also
-explore a method of DT_NEEDED infection that is very difficult to detect
-without ambiguity, and also creates a permanent LD_PRELOAD effect by hijacking
-functions within shared objects loaded with less precedence.
+-= 1.1 SCOP Primer
 
--= A quick primer on the text segment layout
+A SCOP binary, termed "SCOP" from the publication [1] is an ELF executable that
+has been linked with the ld(1) separate-code option in more recent versions of
+ld(1). SCOP binaries are becoming the norm on modern Linux OS's, and already
+the standard in several distributions such as lubuntu 18. The general idea is
+that the text (code) segment is typically only a single segment described by a
+single PT_LOAD segment that is typically marked with R+X permissions. There are
+many areas within an executable that must be read-only, such as the .rodata
+section, but do not require execution. On average there are about 18 sections
+within the text segment and only 4 of which require execution. Therefore the
+remaining 14 sections are executable in memory, though they only require read
+access.  An astute security researcher would recognize that this exposes a
+larger attack surface for ROP gadgets. A quick scan with ROP gadget scanning
+tools such as [10] will show you that there are useable gadgets that exist
+within sections holding relocation, symbol, note, version, and string data. The
+software devs who work on ld(1) realized that it made alot of sense to add a
+feature to the linker that assigns read-only sections into read-only PT_LOAD
+segments, and read+execute sections into a single read+execute PT_LOAD segment.
+Only 4 sections (on average) require execution: .init, .plt, .text, .fini.
+This results in an executable with a text segment that is broken up into 3
+segments, and reduces the ROP gadget attack surface. SCOP binaries are
+dissected in the suggested pre-requisite reading [1]. We also explore SCOP
+throughout this paper which highlights some nuances that are not covered in [1]
+but are relevant when infecting SCOP executables.
+
+-= 1.2 A quick primer on the text segment layout
 
 In traditional executables the loadable segments tradtionally look
 like the ascii illustration 1.0 below.
 
---ELF Illustration 1.0
-
+-Illustration 1.0
 	      PT_LOAD 0		PT_LOAD 1
 [text_segment(R+X)][data_segment(R+W)]
 
-And all of the readonly data which doesn't require execution, such as the
-.rodata section, .rela.* sections, and the dynamic symbol table .dynsym/.dynstr
-are stored in the read-only part of the executable which is the text segment; a
-read-only executable segment. If one gives a close observation though it
-becomes quickly apparent that there are only four or five sections in the text
-segment that actually require execution, and the linker marks them respectively
-with the section_header->sh_flags value being set to SHF_ALLOC|SHF_EXECINSTR,
-whereas the sections that are read-only are marked as SHF_ALLOC, meaning they
-are allocated into memory, and that's it.
+The readonly data which doesn't require execution, again, are stored in the
+read-only part of the executable known as the text segment.
+If one gives a close observation it becomes quickly apparent that there are
+only four or five sections in the text segment that actually require execution,
+and the linker marks them respectively with the sh_flags value being set to
+SHF_ALLOC|SHF_EXECINSTR, whereas the sections that are read-only are marked as
+SHF_ALLOC, meaning they are allocated into memory, and that's it.
 
-Here is the output of 'readelf -S' on a 32bit executable, we examine only the
-sections that are in the text segment, I have truncated the rest of the output.
+Here is the output of 'readelf -S' on a traditional 32bit executable, we
+examine only the sections that are in the text segment, I have truncated the
+rest of the output.
 
   [ 0]			 NULL		 00000000 000000 000000 00	0   0  0
   [ 1] .interp		 PROGBITS	 08048154 000154 000013 00   A	0   0  1
@@ -83,29 +101,34 @@ sections that are in the text segment, I have truncated the rest of the output.
 Notice that only five sections are requiring execution, the rest are set to
 SHF_ALLOC ('A') or in the case of '.rel.plt.' SHF_ALLOC|SHF_INFO_LINK ('AI')
 which indicates that the sh_info member links to another section. Now for those
-who don't have a full grip on ELF, remember that these section permissions are
-only useful for linking code and debugging code at best; however as
-demonstrated in the parsing support for SCOP binaries recently merged into
-https://github.com/elfmaster/libelfmaster we see that when the section headers
-are very useful when heuristically analyzing SCOP binaries with LOAD segments
-that have had their p_flags (Memory permissions) modified which is extremely
-rare but nonetheless having reliable heuristics is important. Had their segment
-permissions tampered with we can rely on the sh_flags of the section headers to
-determine whether a binary is a tampered SCOP binary.
+who don't have a full grasp of the ELF format, remember that these section
+permissions are only useful for linking and debugging code at best; however as
+demonstrated in the parsing support for SCOP binaries that we recently merged
+into libelfmaster [9] we observed that the section headers are very useful when
+heuristically analyzing SCOP binaries with LOAD segments that have had their
+p_flags (Memory permissions) modified such as with various infection methods.
+While parsing hostile or tampered SCOP binaries we can compare the sh_flags of
+allocated sections with the p_flags of the corresponding PT_LOAD segments.  If
+the permissions are consistent accross both sh_flags and p_flags then the SCOP
+binary is very likely untampered. The important thing to note here is that the
+section header sh_flags directly correlate to how the executable is divided
+into corresponding segments with equivalent p_flags.
 
 NOTE: The astute reader may realize that its possible for an attacker to modify
-the section header sh_flags to reflect the segment p_flags.
+the section header sh_flags to reflect the program header p_flags.
 
 With SCOP binaries which are illustrated in [1] we no longer have the convention
 of a single LOAD segment for the text image. Afterall, why store read-only code
 in an executable region when it may contain ROP gadgets? This was a smart move
-by the GNU ld and gcc developers. ELF illustration 1.1 shows what a SCOP
+by the GNU ld(1) developers. ELF illustration 1.1 shows what a SCOP
 binary looks like from the perspective of the program headers.
+
+-Illustration 1.1 
 
    PT_LOAD 0	    PT_LOAD 1		PT_LOAD 2	  PT_LOAD 3
 [text_segment(R)][text_segment(R+X)][text_segment(R)][data segment(R+W)]
 
--= 1.1 Code injection techniques
+-= 1.3 Code injection techniques
 
 I see several ways to instrument the binary with a chunk of additional
 executable code, while still keeping the ELF headers in-tact. First though
@@ -136,7 +159,11 @@ kernel requires to be in-tact.
 The following illustration shows a traditional text segment padding infection
 on disk.
 
-[ehdr][phdr][text:parasite_size_extension(R+X)][PAGE_SIZE][data(R+W)]
+-Illustration 2.0
+
+[ehdr][phdr][text:parasite_size_extension(R+X)][data(R+W)]
+
+-= 2.1 Layout of SCOP program segments
 
 This hardly poses a challenge to the adept binary hacker. After a brief glance
 at the program header table on a SCOP binary we see that the same specification
@@ -173,16 +200,16 @@ infecting both types of binaries; those which are linked with SCOP and those
 that are more traditional.  This should detail the algorithm enough so that
 malware authors, virus enthusiasts, and reverse engineers from all walks can
 begin infecting SCOP binaries with the historical and brilliant text segment
-padding infection concieved by Silvio [3].
+padding infection conceived by Silvio [3].
 
-NOTE: libelfmaster has some function specifically for handling the text segment
+NOTE: libelfmaster has some API functions specifically for handling the text segment
 in SCOP binaries: elf_scop_text_filesz, elf_executable_text_base,
 elf_executable_text_offset. These are different than the traditional API
 functions we also have available: elf_text_filesz, elf_text_base,
 elf_text_offset.
 
-Since this type of infection is well explored, and the difference in approach
-is so subtle I have given an example of some un-tested code shown below that
+Since this type of infection is well explored and the difference in approach
+is so subtle, I have given an example of some un-tested code shown below that
 demonstrates how a text segment padding infection [3] would look. Do not fret
 though, in section 3.4 we give the source code for a totally new type of
 ELF infection that is specific to SCOP binaries.
@@ -409,8 +436,8 @@ which returns the address of the current instruction pointer. We are therefore
 using IP relative addressing tricks that are not at all new to virus writers to
 jump back to the original entry point. Using IP relative addressing tricks to
 calculate the new e_entry address is only necessary when using branch
-instructions that require an absolute address such as indirect jmp, call, ljmp,
-lcall, or a push/ret combo. Otherwise you can simply use an immediate jmp or
+instructions that require an absolute address such as indirect jmp, call,
+or push/ret combo. Otherwise you can simply use an immediate jmp or
 call on the original e_entry value.
 
 The get_rip() technique is old-school and primarily useful for finding the
@@ -420,10 +447,13 @@ address of objects within its own body of code (The parasite).
 -- egg.c (The parasite) --
 
 /*
- * infect.c will patch these values
- * with the addrs of e_entry, and get_rip()
- * from before they are relocated at runtime.
- * These are then subtracted from eachother and
+ * scop_infect.c will patch these initialized .data
+ * section variables. We initialize them so that
+ * they do not get stored into the .bss which is
+ * non-existent on disk. We patch the variables with
+ * with the value of e_entry, and the address of where
+ * the get_rip() function gets injected into the target
+ * binary. These are then subtracted from eachother and
  * from the instruction pointer to get the correct
  * address to jump to.
  */
@@ -467,7 +497,7 @@ unsigned long get_rip(void)
 }
 
 
--- infector (infector.c) --
+-- infector (scop_infector.c) --
 
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -1209,4 +1239,4 @@ done:
 [7] http://www.eresi-project.org
 [8] https://github.com/elfmaster/dt_infect
 [9] https://github.com/elfmaster/libelfmaster
-
+[10] https://github.com/JonathanSalwan/ROPgadget
