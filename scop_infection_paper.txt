@@ -715,7 +715,8 @@ $ ./inject test
 Creating reverse text padding infection to store new .dynstr section
 Updating .dynstr section
 Modified d_entry.value of DT_STRTAB to: 3ff040 (index: 9)
-Successfully injected 'libevil.so' into target: 'test'. Make sure to move 'libevil.so' into one of the shared object search paths, i.e. /lib/x86_64-gnu-linux/
+Successfully injected 'libevil.so' into target: 'test'.
+Make sure to move 'libevil.so' into one of the shared object search paths, i.e. /lib/x86_64-gnu-linux/
 
 $ sudo cp libevil.so /lib/x86_64-linux-gnu/
 $ sudo ldconfig
