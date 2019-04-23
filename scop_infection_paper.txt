@@ -376,24 +376,27 @@ $ ls -lh test_scop
 $
 
 Notice that there is an enormous difference in file size for these two
-executable's which contain approximately the same amount of code and data. In
-the original writeup for SCOP [1] we hadn't yet paid note to this, but it is an
-important detail that lends itself very nicely to Virus authors or to those who
-want to instrument an executable. Whether or not this was an oversight on the
-developers part, I am not entirely sure but no good reason for it has come to
-mind. The exact details on why the test_scop is so much larger than test is
-because SCOP binaries have p_offset's that are identical to their p_vaddr's for
-the first 3 load segments. This is not necessary, because the only requirement
-for an executable segment to load is that its p_vaddr and p_offset must be
-congruent modulo a PAGE_SIZE. Looking at the first 3 PT_LOAD segments 
-we can see that there is a vast amount of space on-disk in between the 1st and 2nd
+executables 'test' and 'test_scop' which contain approximately the same amount
+of code and data. In the original writeup for SCOP [1] we hadn't yet paid note
+to this, but it is an important detail that conveniently lends itself to Virus
+authors and other binary hackers who want to instrument or modify a binary in
+some arbitrary way. Whether or not this was an oversight by the ld(1)
+developers I am not entirely sure, but I haven't yet found a reason to justify
+this caveat.
+
+The exact details on why the test_scop is so much larger than test is because
+SCOP binaries have p_offset's that are identical to their p_vaddr's for the
+first 3 load segments. This is not necessary, because the only requirement for
+an executable segment to load is that its p_vaddr and p_offset must be
+congruent modulo a PAGE_SIZE. Looking at the first 3 PT_LOAD segments we can
+see that there is a vast amount of space on-disk in between the 1st and 2nd
 segment, and in between the 2nd and 3rd segment. The 2nd segment is R+X so this
-is ideally the one we want to use. In the test_scop binary the 2nd PT_LOAD segment
-has a p_filesz of 0x24d (589 decimal) bytes. The offset of the 3rd segment is at
-0x400000. This means that we have an injection space available to us that can be
-calculated by PT_LOAD[2].p_offset - PT_LOAD[1].p_offset + PT_LOAD[1].p_filesz.
-For the test_scop binary this results in 2096563 bytes of padding length. This
-is an unusually large code cave for ELF binary types.
+is ideally the one we want to use. In the test_scop binary the 2nd PT_LOAD
+segment has a p_filesz of 0x24d (589 decimal) bytes. The offset of the 3rd
+segment is at 0x400000. This means that we have an injection space available to
+us that can be calculated by PT_LOAD[2].p_offset - PT_LOAD[1].p_offset +
+PT_LOAD[1].p_filesz.  For the test_scop binary this results in 2096563 bytes of
+padding length. This is an unusually large code cave for ELF binary types.
 
 As it turns out the SCOP [1] binary mitigation not only helps tighten down the ROP
 gadget regions, but it eases the process of inserting code into the executable.
