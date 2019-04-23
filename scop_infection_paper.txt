@@ -177,6 +177,8 @@ infection sizes on 64bit.
   LOAD		 0x0000000000400000 0x0000000000800000 0x0000000000800000
 		 0x0000000000000148 0x0000000000000148	R      0x200000
 
+-= 2.1.2 SCOP Program segments as displayed in /proc/<pid>/maps
+
 00400000-00401000 r--p 00000000 fd:01 3540930	test_scop_binary
 00600000-00601000 r-xp 00200000 fd:01 3540930	test_scop_binary
 00800000-00801000 r--p 00400000 fd:01 3540930	test_scop_binary
@@ -185,10 +187,10 @@ The text segment is broken up into 3 diferent memory mappings. The end of the
 executable mapping (Which is PT_LOAD[1]) is at 0x601000. This virtual address
 that begins the 3rd text segment (PT_LOAD[2]) is at 0x8000000, which leaves
 quite a bit of space for infection in general. For injections that require
-arbitrary length infections, there are alternative solutions, see [4] and [5]
+arbitrary length infections there are alternative solutions; see [4] and [5]
 which use PT_NOTE to PT_LOAD conversions.
 
--= 2.1 Text segment padding infection in SCOP binaries
+-= 2.2 Text segment padding infection in SCOP binaries
 
 The algorithm used for the existing technique is similar to the original
 text segment padding infection except that all phdr->p_offset's after the
@@ -214,7 +216,7 @@ demonstrates how a text segment padding infection [3] would look. Do not fret
 though, in section 3.4 we give the source code for a totally new type of
 ELF infection that is specific to SCOP binaries.
 
--= 2.2 Psuedo Example of SCOP Text segment pdading infection
+-= 2.3 Psuedo Example of SCOP Text segment pdading infection
 
 ... main function, etc. ...
 
